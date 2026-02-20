@@ -1,0 +1,24 @@
+{
+  "extends": "../shared/tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "jsx": "react-jsx",
+    "outDir": "dist",
+    "rootDir": ".",
+    "lib": [
+      "ES2020",
+      "DOM"
+    ],
+    "moduleResolution": "node",
+    "esModuleInterop": true
+  },
+  "include": [
+    "src/**/*",
+    "preload/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 001-quran-short-maker]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [shared, desktop, mobile]
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            ${{ matrix.package }}/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd ${{ matrix.package }}
+          npm ci
+
+      - name: Run tests
+        run: |
+          cd ${{ matrix.package }}
+          npm test
+
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./${{ matrix.package }}/coverage/lcov.info
+          flags: ${{ matrix.package }}

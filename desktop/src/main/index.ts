@@ -1,0 +1,203 @@
+// Electron Main Process
+// Entry point for the desktop application
+
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import { getChapters, getVersesByChapter, getReciters } from '../services/quran-api';
+import { renderVideo as renderVideoFFmpeg } from '../services/ffmpeg-service';
+import { downloadVideo } from '../services/video-cache';
+import { RenderJob } from '../types';
+import * as fs from 'fs';
+
+declare const __dirname: string;
+
+// Keep a global reference of the window object to prevent garbage collection
+let mainWindow: BrowserWindow | null = null;
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, '../../preload/index.js'),
+    },
+  });
+
+  // In development, load from localhost or file
+  // In production, load the built files
+  const isDev = process.env.NODE_ENV === 'development';
+
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+// IPC handlers
+ipcMain.handle('select-video-file', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'Videos', extensions: ['mp4', 'mov', 'webm'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  return result.filePaths[0];
+});
+
+ipcMain.handle('show-in-folder', (_event: any, filePath: string) => {
+  shell.showItemInFolder(filePath);
+});
+
+ipcMain.handle('open-external', (_event: any, url: string) => {
+  shell.openExternal(url);
+});
+
+function getBinPath(name: string): string {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'bin', name + ext);
+  }
+  return path.join(__dirname, '../../../bin', name + ext);
+}
+
+ipcMain.handle('get-ffmpeg-path', () => {
+  return getBinPath('ffmpeg');
+});
+
+ipcMain.handle('get-ffprobe-path', () => {
+  return getBinPath('ffprobe');
+});
+
+// Quran API IPC handlers
+ipcMain.handle('get-chapters', async (_, language: string) => {
+  return await getChapters(language);
+});
+
+ipcMain.handle('get-verses', async (_, chapter: number, language: string, range: string) => {
+  return await getVersesByChapter(chapter, language, range);
+});
+
+ipcMain.handle('get-reciters', async (_, language: string) => {
+  return await getReciters(language);
+});
+
+// Render job IPC handler
+ipcMain.handle('start-render', async (event, jobData: any) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+
+  // Generate job ID if not provided
+  const jobId = jobData.id || crypto.randomUUID();
+  const reciterSlug = jobData.reciterSlug || jobData.reciterId; // fallback to ID
+
+  // Send initial progress
+  if (window) {
+    window.webContents.send('render-progress', jobId, 0, 'starting');
+  }
+
+  // Return immediately with jobId, run rendering in background
+  const outputDir = path.join(app.getPath('userData'), 'output');
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  // Build RenderJob object - we'll update videoSource after downloading
+  const job: RenderJob = {
+    id: jobId,
+    surahNumber: jobData.surahNumber,
+    ayahRangeStart: jobData.ayahRangeStart,
+    ayahRangeEnd: jobData.ayahRangeEnd,
+    reciterId: jobData.reciterId,
+    reciterSlug,
+    videoSource: jobData.videoSource,
+    subtitleConfig: jobData.subtitleConfig,
+    aspectRatio: jobData.aspectRatio as "9:16" | "1:1" | "4:5" | "16:9",
+    status: 'processing',
+    createdAt: new Date(),
+  };
+
+  // Run rendering in background
+  (async () => {
+    try {
+      console.log('[Render] Starting render job:', jobId);
+      console.log('[Render] Video source type:', job.videoSource.sourceType);
+
+      // If stock video, download it first
+      if (job.videoSource.sourceType === 'stock' && job.videoSource.stockUrl) {
+        if (window) window.webContents.send('render-progress', jobId, 5, 'processing', 'Downloading video...');
+        const localPath = await downloadVideo(job.videoSource.stockUrl, jobId);
+        job.videoSource = {
+          ...job.videoSource,
+          sourceType: 'upload',
+          filePath: localPath,
+        };
+        console.log('[Render] Downloaded video to:', localPath);
+      }
+
+      // Check if video file exists
+      if (!job.videoSource.filePath || !fs.existsSync(job.videoSource.filePath)) {
+        throw new Error('Video file not found: ' + job.videoSource.filePath);
+      }
+
+      if (window) window.webContents.send('render-progress', jobId, 10, 'processing', 'Starting render...');
+
+      await renderVideoFFmpeg(job, {
+        ffmpegPath: getBinPath('ffmpeg'),
+        ffprobePath: getBinPath('ffprobe'),
+        outputDir,
+        onProgress: (percent: number) => {
+          if (window) {
+            window.webContents.send('render-progress', jobId, percent, 'processing');
+          }
+        }
+      });
+
+      const outputFilePath = path.join(outputDir, `${job.id}.mp4`);
+      console.log('[Render] Completed:', outputFilePath);
+      if (window) {
+        window.webContents.send('render-progress', jobId, 100, 'completed', outputFilePath);
+      }
+    } catch (error: any) {
+      console.error('[Render] Error:', error.message);
+      if (window) {
+        window.webContents.send('render-progress', jobId, 0, 'failed', error.message);
+      }
+    }
+  })();
+
+  // Return immediately with jobId
+  return { jobId };
+});
+
+
+
+// App event handlers
+app.whenReady().then(createWindow);
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (mainWindow === null) {
+    createWindow();
+  }
+});
+
+// Security: Prevent new window creation
+app.on('web-contents-created', (event, contents) => {
+  contents.setWindowOpenHandler(() => {
+    return { action: 'deny' };
+  });
+});
