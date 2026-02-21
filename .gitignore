@@ -1,6 +1,8 @@
 node_modules/
 dist/
 build/
+release/
+native-tmp/
 coverage/
 .env
 .env.local
