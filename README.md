@@ -24,7 +24,9 @@ Create beautiful short-form videos with Quranic recitations, background videos, 
 
 ## Screenshots
 
-*Coming soon — screenshots of the app in action*
+![Surah Selection](docs/assets/main.jpg)
+![Ayah Selection](docs/assets/screen1.jpg)
+![Settings](docs/assets/settings.jpg)
 
 ---
 
